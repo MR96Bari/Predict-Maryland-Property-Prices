@@ -1,0 +1,711 @@
+---
+title: "Analyzing Local Market Trends to Predict Maryland Property Prices"
+author: "Justin Mejia, Matthew Rutigliano, Emilee Sheaffer"
+date: "2024-08-20"
+output:
+  pdf_document: default
+  word_document: default
+---
+```{r}
+library(ggplot2)
+library(leaps)
+library(class)
+library(pROC)
+library(ROCR)
+library(ISLR)
+library(dplyr)
+library(tidyr)
+library(dplyr)
+library(kknn)
+library(caret)
+library(arules)
+library(arulesViz)
+library(Metrics)
+library(randomForest)
+library(tree)
+library(sf)
+library(devtools)
+library(tidyverse)
+library(readxl)
+```
+
+# Machine Learning Approaches to Predicting Residential Property Prices in Maryland: An Analysis of Local Market Trends
+
+###Executive Summary
+
+Our study investigates what variables impact the average sales price of housing in Maryland, utilizing data measured from January 2022 - May 2024. The housing sales data is primarily pulled from the Maryland Board of Realtors, in addition to utilizing the Maryland Office of Tourism and the U.S. Bureau of Economic Analysis (BEA) for additional variables, such as geographic region and personal income per capita, to make our analysis more robust. An important distinction is that housing data in our study includes sales of homes, condos, and co-ops.
+
+The ideal goal of the study is to effectively determine which independent variables have an impact on the average sales price of housing. We predicted that region, personal income per capita, and season would have the biggest impact on housing sales prices. We also predicted that new listings and median days on market will show a negative correlation with sale price. The aim is to build a model that successfully predicts the sale prices of new properties that enter the market based on local market characteristics and housing market trends. 
+
+### Variables:
+- County: Counties of Maryland
+- Region: Geographic regions of Maryland
+- Month: Months of the year
+- Quarter: Calendar quarters of the year
+- Season: Calendar season of the year
+- Year: Years (2022 - 2024)
+- Median Days on Market: Measures the median days that a home is listed on the market per county by month
+- Units Sold: Number of homes sold per county by month
+- New Listings: Measures the number of new listings on the market per county by month
+- Personal Income Per Capita: Measures the personal income for the average person per county by year, Numerical in US Dollars
+- Average Sales Price: Average sales price of homes sold per county by month
+- Median Sales Price: Median sales price of homes sold per county by month
+- Units Pending: Number of homes under contract but not yet sold per county by month
+- Active Inventory: Number of homes on the market per county by month
+- Months Inventory: Measures the rate at which homes are sold per county by month. Notes the relationship between the number of homes sold in a month by the total number of homes for sale at the end of the month
+
+
+# Part I. Data Preparation
+
+```{r}
+# Load dataframe
+df <- read_excel("Maryland_Housing_Stats.xlsx")
+
+# Remove already extracted feature - did not want to include these variables in our analyses
+df <- df %>% select(-`MONTH_YEAR`)
+df <- df %>% select(-MEDIAN_SALE_PRICE)
+
+# Corrections/simplifications - Making sure region naming convention is consistent & renaming income variable for easier analysis
+df$REGION <- gsub("Western Maryland", "Western", df$REGION)
+names(df)[names(df) == "PERSONAL_INCOME_PER_CAPITA"] <- "INCOME"
+
+# Variable pre-processing - converting some variables in our data set to numeric variables to make it easier for analysis.
+df$UNITS_SOLD <- as.numeric(df$UNITS_SOLD)
+df$UNITS_PENDING <- as.numeric(df$UNITS_PENDING)
+df$ACTIVE_INVENTORY <- as.numeric(df$ACTIVE_INVENTORY)
+df$MONTHS_INVENTORY <- as.numeric(df$MONTHS_INVENTORY)
+df$MEDIAN_DAYS_MARKET <- as.numeric(df$MEDIAN_DAYS_MARKET)
+df$NEW_LISTINGS <- as.numeric(df$NEW_LISTINGS)
+# Factoring our categorical variables with separate levels i.e. Season - factored 1-4 covering each season 4 for Autumn.
+df$COUNTY <- as.factor(df$COUNTY)
+df$MONTH <- as.factor(df$MONTH)
+df$SEASON <- as.factor(df$SEASON)
+df$QUARTER <- as.factor(df$QUARTER)
+df$REGION <- as.factor(df$REGION)
+
+# Summary - summarizing the variables in our dataset
+summary(df)
+```
+
+```{r}
+# Set seed to 123
+set.seed(123)
+
+# Partition Data (at least 10 observations for every variable in training set)
+inTrain <- sample(nrow(df), 0.7*nrow(df))
+train <- data.frame(df[inTrain,])
+test <- data.frame(df[-inTrain,])
+```
+
+
+
+## Data Exploration
+
+```{r}
+# Histogram of Avg Price - breaking down frequency of where housing prices fall across Maryland
+hist(df$AVG_SALE_PRICE, breaks = 9, main = "Histogram of Average Sale Price", xlab = "Price", ylab = "Frequency", col = "lightblue")
+```
+
+The distribution appears to be right-skewed (positively skewed), meaning that there are more properties with lower average sale prices, and fewer properties with higher prices. The bulk of the data is concentrated between $200,000 and $600,000. The most frequent average sale price range, corresponding to the highest bar, appears to fall between $400,000 and $500,000. There are a few instances of much higher average sale prices, such as outlying prices extending beyond $800,000 and up to more than $1,200,000.
+
+This distribution is expected in housing markets where a majority of homes fall into a more affordable range, with higher-priced homes being less common.
+
+
+```{r}
+# Boxplot of Avg Price by Region - breaking out distribution of housing sale price by region
+ggplot(df, aes(x = AVG_SALE_PRICE, y = REGION)) + geom_boxplot() +
+  labs(x = "Sale Price", y = "Region") +
+  theme(axis.text.y = element_text(size = 10), main="Average Sale Price by Region", horizontal = TRUE)
+```
+While the Capital Region of Maryland surrounding Washington D.C. had the highest median of average housing sales price, at around $500,000, the Eastern Shore of Maryland had the largest average housing sales price in Maryland overall (more than $1,250,000). 
+
+Unsurprisingly, the Eastern Shore of Maryland saw the largest distribution of average sales price, with both the lowest average sales price and largest average sales price occurring in the same region. 
+
+Southern Maryland had the narrowest distribution of average sales price, with most home prices falling between $375,000 and $500,000.
+
+
+```{r}
+# Scatterplot - how average sales price is distributed by county and region across Maryland. Average sales price is color coded by region.
+ggplot(df, aes(x = COUNTY, y = AVG_SALE_PRICE, color = REGION)) +
+  geom_point(alpha = 0.7) +
+  labs(title = "Average Sale Price by County and Region",
+       x = "County", y = "Average Sale Price") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_color_discrete(name = "Region")
+```
+Talbot County in the Eastern Shore of Maryland saw the largest distribution of average home sales prices.
+Montgomery County in the Capital Region had the largest average home sales prices in Maryland, while Allegany County in Western Maryland saw the lowest average home sales prices, followed by Somerset County in Eastern Maryland.
+
+## Linear Regression Model (Avg Price)
+
+```{r}
+# LRM 0, all variables as independent variables (judging by the NAs, multicollinearity present)
+LRMprice0 <- lm(AVG_SALE_PRICE~ ., data=train)
+summary(LRMprice0)
+```
+
+
+```{r}
+# LRM 1, Season subbed in for Month, Year, Quarter. County subbed in for Region
+LRMprice1 <- lm(AVG_SALE_PRICE~ COUNTY+UNITS_SOLD+UNITS_PENDING+ACTIVE_INVENTORY+MONTHS_INVENTORY+MEDIAN_DAYS_MARKET+NEW_LISTINGS+SEASON+INCOME, data=train)
+summary(LRMprice1)
+```
+
+
+```{r}
+# LRM 2, Season subbed in for Month, Year, Quarter. Region subbed in for County
+LRMprice2 <- lm(AVG_SALE_PRICE~ REGION+UNITS_SOLD+UNITS_PENDING+ACTIVE_INVENTORY+MONTHS_INVENTORY+MEDIAN_DAYS_MARKET+NEW_LISTINGS+SEASON+INCOME, data=train)
+summary(LRMprice2)
+```
+
+
+
+```{r}
+# Performance of LRM Models
+
+# Predict on training data
+train_preds_LRMprice0 <- predict(LRMprice0, newdata = train)
+train_preds_LRMprice1 <- predict(LRMprice1, newdata = train)
+train_preds_LRMprice2 <- predict(LRMprice2, newdata = train)
+
+# Predict on test data
+test_preds_LRMprice0 <- predict(LRMprice0, newdata = test)
+test_preds_LRMprice1 <- predict(LRMprice1, newdata = test)
+test_preds_LRMprice2 <- predict(LRMprice2, newdata = test)
+
+# Calculate average house price for train and test data
+avg_price_train <- mean(train$AVG_SALE_PRICE)
+avg_price_test <- mean(test$AVG_SALE_PRICE)
+
+# Calculate RMSE and MAE for train and test data
+rmse_train_LRMprice0 <- rmse(train$AVG_SALE_PRICE, train_preds_LRMprice0)
+rmse_train_LRMprice1 <- rmse(train$AVG_SALE_PRICE, train_preds_LRMprice1)
+rmse_train_LRMprice2 <- rmse(train$AVG_SALE_PRICE, train_preds_LRMprice2)
+
+rmse_test_LRMprice0 <- rmse(test$AVG_SALE_PRICE, test_preds_LRMprice0)
+rmse_test_LRMprice1 <- rmse(test$AVG_SALE_PRICE, test_preds_LRMprice1)
+rmse_test_LRMprice2 <- rmse(test$AVG_SALE_PRICE, test_preds_LRMprice2)
+
+mae_train_LRMprice0 <- mae(train$AVG_SALE_PRICE, train_preds_LRMprice0)
+mae_train_LRMprice1 <- mae(train$AVG_SALE_PRICE, train_preds_LRMprice1)
+mae_train_LRMprice2 <- mae(train$AVG_SALE_PRICE, train_preds_LRMprice2)
+
+mae_test_LRMprice0 <- mae(test$AVG_SALE_PRICE, test_preds_LRMprice0)
+mae_test_LRMprice1 <- mae(test$AVG_SALE_PRICE, test_preds_LRMprice1)
+mae_test_LRMprice2 <- mae(test$AVG_SALE_PRICE, test_preds_LRMprice2)
+
+# Normalize RMSE and MAE for train and test data
+normalized_rmse_train_LRMprice0 <- rmse_train_LRMprice0 / avg_price_train * 100
+normalized_rmse_train_LRMprice1 <- rmse_train_LRMprice1 / avg_price_train * 100
+normalized_rmse_train_LRMprice2 <- rmse_train_LRMprice2 / avg_price_train * 100
+
+normalized_rmse_test_LRMprice0 <- rmse_test_LRMprice0 / avg_price_test * 100
+normalized_rmse_test_LRMprice1 <- rmse_test_LRMprice1 / avg_price_test * 100
+normalized_rmse_test_LRMprice2 <- rmse_test_LRMprice2 / avg_price_test * 100
+
+normalized_mae_train_LRMprice0 <- mae_train_LRMprice0 / avg_price_train * 100
+normalized_mae_train_LRMprice1 <- mae_train_LRMprice1 / avg_price_train * 100
+normalized_mae_train_LRMprice2 <- mae_train_LRMprice2 / avg_price_train * 100
+
+normalized_mae_test_LRMprice0 <- mae_test_LRMprice0 / avg_price_test * 100
+normalized_mae_test_LRMprice1 <- mae_test_LRMprice1 / avg_price_test * 100
+normalized_mae_test_LRMprice2 <- mae_test_LRMprice2 / avg_price_test * 100
+
+# Print normalized results for training and test data
+cat("LRMprice0:\n")
+cat("Train Normalized RMSE (% of avg price):", normalized_rmse_train_LRMprice0, "\n")
+cat("Test Normalized RMSE (% of avg price):", normalized_rmse_test_LRMprice0, "\n")
+cat("Train Normalized MAE (% of avg price):", normalized_mae_train_LRMprice0, "\n")
+cat("Test Normalized MAE (% of avg price):", normalized_mae_test_LRMprice0, "\n\n")
+
+cat("LRMprice1:\n")
+cat("Train Normalized RMSE (% of avg price):", normalized_rmse_train_LRMprice1, "\n")
+cat("Test Normalized RMSE (% of avg price):", normalized_rmse_test_LRMprice1, "\n")
+cat("Train Normalized MAE (% of avg price):", normalized_mae_train_LRMprice1, "\n")
+cat("Test Normalized MAE (% of avg price):", normalized_mae_test_LRMprice1, "\n\n")
+
+cat("LRMprice2:\n")
+cat("Train Normalized RMSE (% of avg price):", normalized_rmse_train_LRMprice2, "\n")
+cat("Test Normalized RMSE (% of avg price):", normalized_rmse_test_LRMprice2, "\n")
+cat("Train Normalized MAE (% of avg price):", normalized_mae_train_LRMprice2, "\n")
+cat("Test Normalized MAE (% of avg price):", normalized_mae_test_LRMprice2, "\n")
+```
+
+LRMprice0 and LRMprice1 have similar normalized errors. This tells us that these models are quite consistent in their performance. On average, the predictions from these models are off by about 10% of the average house price (for RMSE) and 6.5% (for MAE).
+
+LRMprice2 has higher normalized errors. The predictions are, on average, off by about 18.8% of the average house price (for RMSE) and 14.0% (for MAE). This indicates that LRMprice2 is less accurate compared to the other models.
+
+We should use LRM 0 or 1.
+
+
+# Predicting Prices - LRMprice1
+```{r}
+prediction_data <- data.frame(
+  COUNTY = factor(c("Anne Arundel County", "Baltimore County", "Montgomery County"), levels = levels(train$COUNTY)),
+  UNITS_SOLD = c(100, 150, 200),
+  UNITS_PENDING = c(50, 75, 100),
+  ACTIVE_INVENTORY = c(300, 400, 500),
+  MONTHS_INVENTORY = c(1.5, 2.0, 2.5),
+  MEDIAN_DAYS_MARKET = c(15, 20, 25),
+  NEW_LISTINGS = c(10, 15, 20),
+  SEASON = factor(c("Spring", "Summer", "Winter"), 
+                  levels = levels(train$SEASON)),
+  INCOME = c(50000, 60000, 70000))
+
+predicted_prices <- predict(LRMprice1, prediction_data)
+predicted_prices
+
+```
+
+## Logistic Regression Model (Classifying Hot and Cold Markets)
+
+Create a categorical target variable that indicates whether the market in a county is "Hot" or "Cold". "Hot" markets are defined as those with high sales volumes, high average sale prices, and low median days on the market. Conversely, "Cold" markets have lower sales volumes, lower prices, and longer time on the market.
+
+```{r}
+# Create the target variable (Hot or Cold Market)
+dfglm <- df
+median_avg_sale_price <- median(dfglm$AVG_SALE_PRICE, na.rm = TRUE)
+median_days_market <- median(dfglm$MEDIAN_DAYS_MARKET, na.rm = TRUE)
+dfglm$MARKET_STATUS <- ifelse(dfglm$AVG_SALE_PRICE > median_avg_sale_price & dfglm$MEDIAN_DAYS_MARKET < median_days_market, "Hot", "Cold")
+dfglm$MARKET_STATUS <- as.factor(dfglm$MARKET_STATUS)
+
+# To avoid data leakage, we remove the two variables that determine Market Status
+dfglm <- dfglm %>% select(-AVG_SALE_PRICE, -MEDIAN_DAYS_MARKET)
+
+
+# Partition Data
+set.seed(123)
+inTrain2 <- sample(nrow(dfglm), 0.7 * nrow(df))
+market.train <- dfglm[inTrain2, ]
+temp2 <- dfglm[-inTrain2, ]
+market.validation <- sample(nrow(temp2), 0.5 * nrow(temp2))
+market.val <- temp2[market.validation, ]
+market.test <- temp2[-market.validation, ]
+rm(temp2)
+
+# Logistic Regression Model
+# GLMmarket1 <- glm(MARKET_STATUS ~ REGION + UNITS_SOLD + UNITS_PENDING + ACTIVE_INVENTORY + MONTHS_INVENTORY + NEW_LISTINGS + SEASON + INCOME, data = market.train, family = binomial)
+GLMmarket1 <- glm(MARKET_STATUS ~ ., data = market.train, family = binomial)
+summary(GLMmarket1)
+```
+
+
+```{r}
+# Predict on validation set
+market.logistic_preds.val <- predict(GLMmarket1, newdata = market.val, type = "response")
+market.logistic_class.val <- ifelse(market.logistic_preds.val > 0.5, "Hot", "Cold")
+
+# Confusion Matrix for Logistic Regression vaidation
+confusion_matrix_logistic.val <- table(Predicted = market.logistic_class.val, Actual = market.val$MARKET_STATUS)
+print(confusion_matrix_logistic.val)
+cat("The validation error for this LR is:", (11)/(11+23+70))
+```
+
+
+```{r}
+# Predict on test set
+market.logistic_preds.test <- predict(GLMmarket1, newdata = market.test, type = "response")
+market.logistic_class.test <- ifelse(market.logistic_preds.test > 0.5, "Hot", "Cold")
+
+# Confusion Matrix for Logistic Regression test
+confusion_matrix_logistic.test <- table(Predicted = market.logistic_class.test, Actual = market.test$MARKET_STATUS)
+print(confusion_matrix_logistic.test)
+cat("The test error for this LR is:", (8)/(73+8+24))
+```
+
+
+```{r}
+# Here we created a heat map to display the Maryland county's market status
+# Group the data by county and market status, then count the occurrences
+county_status <- dfglm %>%
+  group_by(COUNTY, MARKET_STATUS) %>%
+  summarise(Count = n()) %>%
+  ungroup()
+
+# Load Maryland shapefile for county boundaries (https://github.com/UrbanInstitute/urbnmapr)
+# devtools::install_github("UrbanInstitute/urbnmapr")
+library(tidyverse)
+library(urbnmapr)
+map <- get_urbn_map("counties", sf = TRUE)
+map$county_name <- gsub("Baltimore city", "Baltimore City", map$county_name)
+maryland_map <- map %>%
+  filter(state_name == "Maryland")
+
+# Join the count data with the spatial data
+map_data <- maryland_map %>%
+  left_join(county_status, by = c("county_name" = "COUNTY"))
+
+# Plot the heatmap
+ggplot(data = map_data) +
+  geom_sf(aes(fill = Count)) +
+  scale_fill_gradient(low = "blue", high = "red") +
+  labs(title = "Heatmap of Maryland Counties by Market Status",
+       fill = "Number of Instances",
+       caption = "Blue = Cold, Red = Hot") +
+  theme_minimal()
+```
+
+
+
+## KNN Model (Classifying Hot and Cold Markets)
+
+```{r}
+# Prepare the data
+dfknn <- dfglm
+dfknn[,c(3:8, 11)] <- scale(dfknn[,c(3:8, 11)])
+
+# Convert categorical variables to dummy variables
+df_dummies <- model.matrix(~ COUNTY + MONTH + SEASON + REGION + QUARTER, data = dfknn)
+
+# Remove the intercept column (the first column)
+df_dummies <- df_dummies[, -1]
+
+# Combine dummy variables with the rest of the dataset
+dfknn <- cbind(dfknn[, !(names(dfknn) %in% c("COUNTY", "MONTH", "SEASON", "REGION", "QUARTER"))], df_dummies)
+
+# Partition data
+set.seed(123)
+inTrain2 <- sample(nrow(dfknn), 0.7 * nrow(dfknn))
+market.train <- dfknn[inTrain2, ]
+temp2 <- dfknn[-inTrain2, ]
+market.validation <- sample(nrow(temp2), 0.5 * nrow(temp2))
+market.val <- temp2[market.validation, ]
+market.test <- temp2[-market.validation, ]
+rm(temp2)
+
+train_input <- as.matrix(market.train[,-8])
+train_output <- as.matrix(market.train[,8])
+validate_input <- as.matrix(market.val[,-8])
+test_input <- as.matrix(market.test[,-8])
+```
+
+
+```{r}
+# KNN with K=3 (for reference) for Hot and Cold Classification
+class.prediction <- knn(train_input, train_input, train_output, k=3)
+
+# Training confusion matrix and error rate
+confusion.train <- table(market.train$MARKET_STATUS, class.prediction)
+error.train <- 1 - (confusion.train[1,1] + confusion.train[2,2]) / sum(confusion.train)
+
+# Validation confusion matrix and error rate
+class.prediction.val <- knn(train_input, validate_input, train_output, k=3)
+confusion.validation <- table(market.val$MARKET_STATUS, class.prediction.val)
+error.validation <- 1 - (confusion.validation[1,1] + confusion.validation[2,2]) / sum(confusion.validation)
+
+# Test confusion matrix and error rate
+class.prediction.test <- knn(train_input, test_input, train_output, k=3)
+confusion.test <- table(market.test$MARKET_STATUS, class.prediction.test)
+error.test <- 1 - (confusion.test[1,1] + confusion.test[2,2]) / sum(confusion.test)
+confusion.test
+error.test
+```
+
+
+```{r}
+# Finding the best K
+kmax <- 20
+ER1 <- rep(0, kmax)
+ER2 <- rep(0, kmax)
+set.seed(123)
+
+for (i in 1:kmax) {
+  prediction <- knn(train_input, train_input, train_output, k=i)
+  prediction2 <- knn(train_input, validate_input, train_output, k=i)
+  CM1 <- table(market.train$MARKET_STATUS, prediction)
+  ER1[i] <- (CM1[1,2] + CM1[2,1]) / sum(CM1)
+  CM2 <- table(market.val$MARKET_STATUS, prediction2)
+  ER2[i] <- (CM2[1,2] + CM2[2,1]) / sum(CM2)
+}
+
+# Plot
+plot(c(1, kmax), c(0, 0.7), type="n", xlab="k", ylab="Error Rate")
+lines(ER1, col="red")
+lines(ER2, col="blue")
+legend(10, 0.65, c("Training", "Validation"), lty=c(1,1), col=c("blue", "red"))
+z <- which.min(ER2) # z = 6 in this case
+points(z, ER2[z], col="red", cex=2, pch=20)
+cat("Minimum Validation Error k:", z, "\n")
+cat("Training Error:", ER1[z])
+cat("Minimum Validation Error:", ER2[z], "\n")
+
+# Test error rate for best K
+prediction3 <- knn(train_input, test_input, train_output, k=z)
+confusion.test <- table(market.test$MARKET_STATUS, prediction3)
+error.test <- 1 - (confusion.test[1,1] + confusion.test[2,2]) / sum(confusion.test)
+cat("Test Error:", error.test, "\n")
+```
+
+
+```{r}
+# ROC Curves for best KNN model
+actual.val <- market.val$MARKET_STATUS
+actual.test <- market.test$MARKET_STATUS
+
+prediction4 <- knn(train_input, validate_input, train_output, k=z, prob=TRUE)
+predicted.probability <- attr(prediction4, "prob")
+predicted.probability.knn <- ifelse(prediction4 == "Yes", predicted.probability, 1 - predicted.probability)
+roc_rose <- plot(roc(actual.val, predicted.probability.knn), print.auc = TRUE, col = "blue", legacy.axes=TRUE)
+
+prediction5 <- knn(train_input, test_input, train_output, k=z, prob=TRUE)
+predicted.probability <- attr(prediction5, "prob")
+predicted.probability.test <- ifelse(prediction5 == "Yes", predicted.probability, 1 - predicted.probability)
+roc_rose <- plot(roc(actual.test, predicted.probability.test), print.auc = TRUE, add=TRUE, col = "red", print.auc.y=0.4, legacy.axes=TRUE)
+```
+
+
+```{r}
+# Lift Chart KNN
+actuals <- market.val$MARKET_STATUS
+predictions <- predicted.probability.knn
+pred <- prediction(predictions, actuals)
+perf <- performance(pred, measure = "tpr", x.measure = "rpp")
+plot(perf, colorize = FALSE, main = "Lift Chart", xlab="Proportion of Total Instances", ylab="Proportion of Positive Instances Gained")
+abline(a=0, b=1, lty=2, col="red")
+```
+
+
+```{r}
+# Linear Probability Model (LPM) for Hot and Cold Classification
+lpm.market.train <- market.train # to create new df for this model
+lpm.market.val <- market.val
+lpm.market.test <- market.test
+lpm.market.train$MARKET_STATUS_n <- as.numeric(lpm.market.train$MARKET_STATUS) - 1
+lpm.market.val$MARKET_STATUS_n <- as.numeric(lpm.market.val$MARKET_STATUS) - 1
+lpm.market.test$MARKET_STATUS_n <- as.numeric(lpm.market.test$MARKET_STATUS) - 1
+lpm.actual.val <- lpm.market.val$MARKET_STATUS
+lpm.actual.test <- lpm.market.test$MARKET_STATUS
+model <- lm(MARKET_STATUS_n~ . -MARKET_STATUS, data=lpm.market.train)
+
+# The validation error rate for the LPM
+predicted.probability.LPM <- predict(model, newdata=lpm.market.val)
+lpm.predicted <- ifelse(predicted.probability.LPM > 0.5, 1, 0)
+conf.LPM <- table(lpm.actual.val, lpm.predicted)
+error.LPM <- 1 - (conf.LPM[1,1] + conf.LPM[2,2]) / sum(conf.LPM)
+cat("The validation error rate for the LPM:", error.LPM, "\n")
+
+# The test error rate for the LPM
+predicted.probability.LPM.test <- predict(model, newdata=lpm.market.test)
+lpm.predicted.test <- ifelse(predicted.probability.LPM.test > 0.5, 1, 0)
+conf.LPM <- table(lpm.actual.test, lpm.predicted.test)
+error.LPM <- 1 - (conf.LPM[1,1] + conf.LPM[2,2]) / sum(conf.LPM)
+cat("The test error rate for the LPM:", error.LPM, "\n")
+
+# Logistic Regression Model for Hot and Cold Classification
+fit <- glm(MARKET_STATUS ~ ., data=market.train, family="binomial")
+predicted.probability.LR <- predict(fit, type="response", newdata=market.val)
+predicted <- ifelse(predicted.probability.LR > 0.5, 1, 0)
+conf.LR <- table(actual.val, predicted)
+error.LR <- 1 - (conf.LR[1,1] + conf.LR[2,2]) / sum(conf.LR)
+cat("The validation error for LR is:", error.LR)
+
+predicted.probability.LR.test <- predict(fit, type="response", newdata=market.test)
+predicted <- ifelse(predicted.probability.LR.test > 0.5, 1, 0)
+conf.LR <- table(actual.test, predicted)
+error.LR <- 1 - (conf.LR[1,1] + conf.LR[2,2]) / sum(conf.LR)
+cat("The test error for LR is:", error.LR)
+
+roc_rose <- plot(roc(actual.val, predicted.probability.knn), print.auc = TRUE, col = "cyan", legacy.axes=TRUE)
+roc_rose <- plot(roc(actual.val, predicted.probability.LR), print.auc = TRUE, col = "magenta", legacy.axes=TRUE, add=TRUE, print.auc.y=0.4)
+roc_rose <- plot(roc(actual.val, predicted.probability.LPM), print.auc = TRUE, col = "blue", legacy.axes=TRUE, add=TRUE, print.auc.y=0.3)
+```
+
+
+
+## Tree (Predicting Sale Price) 
+
+* Very poor results on this tree for predicting price
+
+```{r}
+# Generate the best pruned regression tree model to predict price. Season subbed in for Month, Year, Quarter. Region subbed in for County
+set.seed(123)
+tree.price <- tree(AVG_SALE_PRICE~ REGION+UNITS_SOLD+UNITS_PENDING+ACTIVE_INVENTORY+MONTHS_INVENTORY+MEDIAN_DAYS_MARKET+NEW_LISTINGS+SEASON+INCOME, train)
+cv.tree.price <- cv.tree(tree.price, FUN = prune.tree)
+plot(cv.tree.price$size, cv.tree.price$dev, type ='b')
+
+# Find values of the minimum deviance
+min_dev <- which(cv.tree.price$dev == min(cv.tree.price$dev))
+
+# Extract the minimum corresponding size
+min_sizes <- cv.tree.price$size[min_dev]
+(min(min_sizes))
+```
+
+
+```{r}
+# Prune the tree by best = the min above
+prune.price <- prune.tree(tree.price, best=10)
+plot(prune.price)
+text(prune.price, pretty=0)
+```
+
+
+```{r}
+# Test Data
+price.test <- test$AVG_SALE_PRICE
+prune.pricepred <- predict(prune.price, test)
+
+# Calculate MSE and RMSE for Test Data
+mse_test_prune <- mean((prune.pricepred - price.test)^2)
+rmse_test_prune <- sqrt(mse_test_prune)
+
+# Calculate average house price for test data
+avg_price_test <- mean(price.test)
+
+# Normalize MSE and RMSE for Test Data
+normalized_mse_test_prune <- mse_test_prune / avg_price_test * 100
+normalized_rmse_test_prune <- rmse_test_prune / avg_price_test * 100
+
+# Print normalized results for test data
+cat("Test Normalized MSE (% of avg price):", normalized_mse_test_prune, "\n")
+cat("Test Normalized RMSE (% of avg price):", normalized_rmse_test_prune, "\n")
+
+# Training Data
+prune.pricepred.train <- predict(prune.price, train)
+
+# Calculate MSE and RMSE for Training Data
+mse_train_prune <- mean((prune.pricepred.train - train$AVG_SALE_PRICE)^2)
+rmse_train_prune <- sqrt(mse_train_prune)
+
+# Calculate average house price for train data
+avg_price_train <- mean(train$AVG_SALE_PRICE)
+
+# Normalize MSE and RMSE for Training Data
+normalized_mse_train_prune <- mse_train_prune / avg_price_train * 100
+normalized_rmse_train_prune <- rmse_train_prune / avg_price_train * 100
+
+# Print normalized results for training data
+cat("Train Normalized MSE (% of avg price):", normalized_mse_train_prune, "\n")
+cat("Train Normalized RMSE (% of avg price):", normalized_rmse_train_prune, "\n")
+```
+
+
+## Tree (Classifying Hot and Cold Markets)
+
+```{r}
+# Using df from the GLM model
+# Partition Data
+set.seed(123)
+inTrain2 <- sample(nrow(dfglm), 0.7 * nrow(df))
+market.train <- dfglm[inTrain2, ]
+temp2 <- dfglm[-inTrain2, ]
+market.validation <- sample(nrow(temp2), 0.5 * nrow(temp2))
+market.val <- temp2[market.validation, ]
+market.test <- temp2[-market.validation, ]
+rm(temp2)
+
+# Create Deep Tree
+tree.market <- tree(MARKET_STATUS~ ., market.train)
+summary(tree.market)
+```
+
+```{r}
+# Plot
+set.seed(123)
+cv.tree.market <- cv.tree(tree.market, FUN = prune.misclass)
+names(cv.tree.market)
+cv.tree.market
+plot(cv.tree.market$size, cv.tree.market$dev, type="b")
+```
+
+Tree of size 4 delivers the minimum variance.
+```{r}
+# Create best prune tree
+prune.market <- prune.misclass(tree.market, best=5)
+plot(prune.market)
+text(prune.market, pretty=0)
+```
+
+```{r}
+# Test error rate
+market.prunetree.pred <- predict(prune.market, market.test, type="class")
+(CM <- table(market.test$MARKET_STATUS, market.prunetree.pred))
+Acc <- (CM[1,1]+CM[2,2])/sum(CM)
+cat("The test error for this Tree is:", 1-Acc)
+```
+
+```{r}
+# Graph depicting the test ROC’s for the classification tree and logistic regression model.
+market.prunetree.pred <- as.numeric(market.prunetree.pred)
+market.logistic_class.test <- factor(market.logistic_class.test)
+market.logistic_class.test <- as.numeric(market.logistic_class.test)
+par(pty="s")
+roc_rose <- plot(roc(market.test$MARKET_STATUS, market.prunetree.pred), print.auc = TRUE, legacy.axes=TRUE, col = "blue")
+roc_rose <- plot(roc(market.test$MARKET_STATUS, market.logistic_class.test), print.auc = TRUE, legacy.axes=TRUE, col = "red", add=TRUE, print.auc.y = .4)
+```
+
+Logistic Regression model is better at classifying hot and cold markets versus the classification tree. 
+
+# Random Forest
+
+```{r}
+# Random Forest to market status.
+set.seed(123)
+rf.market2 <- randomForest(MARKET_STATUS~ ., data=market.train, mtry=4, importance=TRUE)
+rf.market.test2 <- predict(rf.market2, newdata=market.test)
+rf.market.test2 <- as.numeric(rf.market.test2)
+market.status.test <- as.numeric(market.test$MARKET_STATUS)
+
+# test error (MSE)
+mean((rf.market.test2-market.status.test)^2)
+
+# matrix
+(CM <- table(market.test$MARKET_STATUS, rf.market.test2))
+Acc <- (CM[1,1]+CM[2,2])/sum(CM)
+TN <- CM[1,1]  # True Negative
+FP <- CM[1,2]  # False Positive
+FN <- CM[2,1]  # False Negative
+TP <- CM[2,2]  # True Positive
+cat("The test error for the Random Forest is:", 1-Acc)
+
+# Calculate Sensitivity (Recall or True Positive Rate)
+sensitivity <- TP / (TP + FN)
+print(paste("Sensitivity:", sensitivity))
+
+# Calculate Specificity (True Negative Rate)
+specificity <- TN / (TN + FP)
+print(paste("Specificity:", specificity))
+
+# Calculate Accuracy
+accuracy <- (TP + TN) / (TP + TN + FP + FN)
+print(paste("Accuracy:", accuracy))
+```
+
+
+
+```{r}
+# Generate the variable importance plot
+importance(rf.market2)
+varImpPlot(rf.market2)
+```
+
+
+
+Assumption Checking
+```{r}
+# Check our linearity assummption
+par(mfrow = c(2, 2))  # 2x2 plot layout
+plot(LRMprice0)
+
+# Diagnostic plots for LRMprice1
+plot(LRMprice1)
+
+# Diagnostic plots for LRMprice2
+plot(LRMprice2)
+```
+Overall Evaluation:
+Homoscedasticity: The residuals vs. fitted and scale-location plots both suggest that the assumption of homoscedasticity is met, as there is no clear pattern or funnel shape in the residuals.
+Linearity: The residuals vs. fitted plot does not show any systematic patterns, which suggests that the linearity assumption is reasonably met.
+Normality of Residuals: The Q-Q plot indicates that the residuals are approximately normally distributed, although there are some deviations at the tails, which may warrant further investigation.
+Influential Points: The residuals vs. leverage plot shows a few potentially influential points, but overall, the model does not seem to be unduly influenced by these observations.
+
+
+
+
+
+
+
+
+
+
+
