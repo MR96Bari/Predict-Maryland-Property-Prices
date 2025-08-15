@@ -53,6 +53,7 @@ Install required R packages.
 Knit the R Markdown to reproduce analysis.
 
 📌 Authors
+
 Emilee Sheaffer
 
 Justin Mejia
