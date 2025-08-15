@@ -37,3 +37,27 @@ Using statistical analysis and machine learning models, we:
 - Libraries: `tidyverse`, `caret`, `randomForest`, `ggplot2`, etc.
 
 ## 📂 Repository Structure
+├── data/ # Source data (not included due to licensing)
+├── scripts/ # R scripts for analysis and modeling
+├── results/ # Model outputs, figures, and evaluation metrics
+├── README.md # Project documentation
+└── report/ # Final project report (PDF/DOCX)
+## 🚀 How to Run
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/yourusername/maryland-housing-trends.git
+Open RScript Maryland Market Trends Group A FINAL.Rmd in RStudio.
+
+Install required R packages.
+
+Knit the R Markdown to reproduce analysis.
+
+📌 Authors
+Emilee Sheaffer
+
+Justin Mejia
+
+Matthew Rutigliano
+
+📄 License
+This project is released under the MIT License.
