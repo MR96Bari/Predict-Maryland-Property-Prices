@@ -61,4 +61,4 @@ Justin Mejia
 Matthew Rutigliano
 
 📄 License
-This project is released under the GPL-3.0 license License.
+This project is released under the GPL-3.0 License.
